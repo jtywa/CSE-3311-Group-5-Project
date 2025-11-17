@@ -5,6 +5,7 @@ import MapView, { Marker, Region } from 'react-native-maps';
 import { type Building, type RoomSearchResult } from '../assets/map asset/marker';
 import FloorPlanViewer from './components/FloorPlanViewer';
 import SearchBar from './components/SearchBar';
+import LoadingScreen from './components/LoadingScreen';
 
 const initialRegion: Region = {
   latitude: 32.7296,
@@ -14,6 +15,7 @@ const initialRegion: Region = {
 };
 
 export default function App() {
+  const [isLoading, setIsLoading] = useState(true);
   const [pin, setPin] = useState<{ lat: number; lon: number; title: string } | null>(null);
   const [showFloorPlan, setShowFloorPlan] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<RoomSearchResult | null>(null);
@@ -50,6 +52,10 @@ export default function App() {
     setShowFloorPlan(true);
   };
 
+  if (isLoading) {
+    return <LoadingScreen onFinish={() => setIsLoading(false)} />;
+  }
+
   return (
     <View style={styles.container}>
       <MapView ref={mapRef} style={styles.map} initialRegion={initialRegion}>
@@ -64,6 +70,11 @@ export default function App() {
         onBuildingFound={handleBuildingFound} 
         onRoomFound={handleRoomFound}
         onSearchSubmit={() => {}} 
+        onClear={() => {
+          setPin(null);
+          setShowFloorPlan(false);
+          setSelectedRoom(null);
+        }}
       />
 
       {/* Floor Plan Modal */}

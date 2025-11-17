@@ -6,9 +6,10 @@ interface SearchBarProps {
   onBuildingFound: (building: Building) => void;
   onRoomFound?: (result: RoomSearchResult) => void;
   onSearchSubmit: () => void;
+  onClear?: () => void;
 }
 
-export default function SearchBar({ onBuildingFound, onRoomFound, onSearchSubmit }: SearchBarProps) {
+export default function SearchBar({ onBuildingFound, onRoomFound, onSearchSubmit, onClear }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<Building[]>([]);
   const [roomSuggestions, setRoomSuggestions] = useState<RoomSearchResult[]>([]);
@@ -51,13 +52,15 @@ export default function SearchBar({ onBuildingFound, onRoomFound, onSearchSubmit
         // Just room number like "b22" or "B22" - search across all buildings
         const capitalizedRoom = q.charAt(0).toUpperCase() + q.slice(1).toLowerCase();
         
-        // Try with each building that has floors
+        // Import room data loader to check for room data
+        const { hasBuildingData, hasFloor, getFloorRooms, getRoomCoordinates } = require('../../assets/map asset/roomDataLoader');
+        
+        // Try with each building (check both floors and room data)
         for (const building of BUILDINGS) {
-          if (!building.floors) continue;
-          
           // Determine floor from room number
           const firstChar = q.charAt(0).toUpperCase();
           let targetFloorLevel = '';
+          let searchRoomNumber = capitalizedRoom;
           
           if (firstChar === 'B') {
             targetFloorLevel = 'B';
@@ -65,18 +68,61 @@ export default function SearchBar({ onBuildingFound, onRoomFound, onSearchSubmit
             targetFloorLevel = firstChar;
           }
           
-          if (targetFloorLevel) {
-            const targetFloor = building.floors.find(f => f.level === targetFloorLevel);
-            if (targetFloor) {
-              const placeholderRoom: any = {
-                number: capitalizedRoom,
-                x: 50,
-                y: 50,
-                name: 'Room'
-              };
-              roomResult = { building, floor: targetFloor, room: placeholderRoom };
-              break;
+          if (!targetFloorLevel) continue;
+          
+          // Check if building has floor data (either in floors, roomData, or floor plan images)
+          let targetFloor = building.floors?.find(f => f.level === targetFloorLevel);
+          const hasRoomData = hasBuildingData(building.code);
+          const floorExistsInData = hasRoomData && hasFloor(building.code, targetFloorLevel);
+          
+          // Check if floor plan image exists (even if no room data)
+          const { hasFloorPlanImage } = require('../../assets/map asset/floorPlanImages');
+          const hasFloorPlan = hasFloorPlanImage(building.code, targetFloorLevel);
+          
+          // For basement rooms, try to find the room in the data (handles both "B22" and "22" formats)
+          let foundRoom = false;
+          if (targetFloorLevel === 'B' && hasRoomData) {
+            // Try with "B" prefix first
+            if (getRoomCoordinates(building.code, 'B', searchRoomNumber)) {
+              foundRoom = true;
+            } else if (searchRoomNumber.startsWith('B')) {
+              // Try without "B" prefix
+              const roomWithoutB = searchRoomNumber.substring(1);
+              if (getRoomCoordinates(building.code, 'B', roomWithoutB)) {
+                searchRoomNumber = roomWithoutB;
+                foundRoom = true;
+              }
+            } else {
+              // Try with "B" prefix
+              const roomWithB = 'B' + searchRoomNumber;
+              if (getRoomCoordinates(building.code, 'B', roomWithB)) {
+                searchRoomNumber = roomWithB;
+                foundRoom = true;
+              }
             }
+          }
+          
+          // If floor doesn't exist in building.floors, create it if:
+          // 1. Floor exists in roomData, OR
+          // 2. Floor plan image exists (even without room data)
+          if (!targetFloor && (floorExistsInData || hasFloorPlan)) {
+            const floorName = targetFloorLevel === 'B' ? 'Basement' : 
+              ['', 'First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth'][parseInt(targetFloorLevel)] + ' Floor';
+            targetFloor = {
+              level: targetFloorLevel,
+              name: floorName,
+            };
+          }
+          
+          if (targetFloor || floorExistsInData || hasFloorPlan || foundRoom) {
+            const placeholderRoom: any = {
+              number: searchRoomNumber,
+              x: 50,
+              y: 50,
+              name: 'Room'
+            };
+            roomResult = { building, floor: targetFloor || { level: targetFloorLevel, name: `Floor ${targetFloorLevel}` }, room: placeholderRoom };
+            break;
           }
         }
       } else {
@@ -146,19 +192,41 @@ export default function SearchBar({ onBuildingFound, onRoomFound, onSearchSubmit
     }
   };
 
+  const handleClear = () => {
+    setQuery('');
+    setSuggestions([]);
+    setRoomSuggestions([]);
+    setShowSuggestions(false);
+    Keyboard.dismiss();
+    if (onClear) {
+      onClear();
+    }
+  };
+
   return (
     <View style={styles.container}>
-              <TextInput
-        style={styles.searchBar}
-        placeholder="Search building or room (e.g., NH, NH110)…"
-        value={query}
-        onChangeText={setQuery}
-        onSubmitEditing={handleSubmit}
-        returnKeyType="search"
-        placeholderTextColor="#888"
-        autoCapitalize="characters"
-        autoCorrect={false}
-      />
+      <View style={styles.searchBarContainer}>
+        <TextInput
+          style={styles.searchBar}
+          placeholder="Search building or room (e.g., NH, NH110)…"
+          value={query}
+          onChangeText={setQuery}
+          onSubmitEditing={handleSubmit}
+          returnKeyType="search"
+          placeholderTextColor="#888"
+          autoCapitalize="characters"
+          autoCorrect={false}
+        />
+        {query.length > 0 && (
+          <TouchableOpacity
+            style={styles.clearButton}
+            onPress={handleClear}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Text style={styles.clearButtonText}>✕</Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
       {showSuggestions && (
         <ScrollView 
@@ -210,17 +278,33 @@ const styles = StyleSheet.create({
     right: 20,
     zIndex: 1000,
   },
-  searchBar: {
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: 'white',
-    paddingHorizontal: 15,
-    paddingVertical: 12,
     borderRadius: 25,
-    fontSize: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
+  },
+  searchBar: {
+    flex: 1,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    fontSize: 16,
+  },
+  clearButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  clearButtonText: {
+    fontSize: 18,
+    color: '#999',
+    fontWeight: 'bold',
   },
   suggestionsContainer: {
     backgroundColor: 'white',

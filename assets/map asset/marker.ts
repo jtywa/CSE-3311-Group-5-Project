@@ -32,60 +32,6 @@ export const BUILDINGS: Building[] = [
     lat: 32.732497072578525, 
     lon: -97.11384254666201, 
     aliases: ['Nedderman', 'Nedderman Hall', 'NH'],
-    floors: [
-      {
-        level: 'B',
-        name: 'Basement',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_B22a-1.png'),
-      },
-      {
-        level: '1',
-        name: 'First Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_100-1.png'),
-
-      },
-      {
-        level: '2',
-        name: 'Second Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_202-1.png'),
-
-      },
-      {
-        level: '3',
-        name: 'Third Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_315-1.png'),
-
-      },
-      {
-        level: '4',
-        name: 'Fourth Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_414-1.png'),
-
-      },
-      {
-        level: '1',
-        name: 'Fourth Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_5151-1.png'),
-
-      },
-      {
-        level: '4',
-        name: 'First Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_601-1.png'),
-
-      },
-      {
-        level: '5',
-        name: 'Fifth Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_5151-1.png'),
-      },
-      {
-        level: '6',
-        name: 'Sixth Floor',
-        mapImage: require('../images/floor-plans/NeddermanHall/Evac_NH_601-1.png')
-
-      }
-    ]
   },
   { code: 'ERB',  name: 'Engineering Research Building', lat: 32.73309497916678,  lon: -97.11239587034484, aliases: ['Engineering Research', 'Research'] },
   { code: 'COBA', name: 'Business Building',             lat: 32.7297063651245,   lon: -97.11064793176776, aliases: ['Business', 'COBA'] },
@@ -170,7 +116,28 @@ export type RoomSearchResult = {
   room: Room;
 };
 
+// Helper function to get floor name from level
+const getFloorName = (level: string): string => {
+  if (level === 'B') return 'Basement';
+  const num = parseInt(level, 10);
+  if (isNaN(num)) return `Floor ${level}`;
+  const suffixes = ['', 'First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth'];
+  return num < suffixes.length ? `${suffixes[num]} Floor` : `Floor ${level}`;
+};
+
+// Helper to get floor plan image
+const getFloorPlanImageForFloor = (buildingCode: string, floorLevel: string): any => {
+  try {
+    const { getFloorPlanImage } = require('./floorPlanImages');
+    return getFloorPlanImage(buildingCode, floorLevel);
+  } catch {
+    return undefined;
+  }
+};
+
 export const findRoom = (query: string, buildings: Building[]): RoomSearchResult | undefined => {
+  // Import room data loader dynamically to avoid circular dependencies
+  const { getRoomCoordinates, hasBuildingData, hasFloor } = require('./roomDataLoader');
   const q = query.trim();
   
   // Try to parse patterns like "NH B22", "NH 110", "Nedderman B22", "NH110", "NHB22"
@@ -186,7 +153,7 @@ export const findRoom = (query: string, buildings: Building[]): RoomSearchResult
     const [, buildingPart, roomNumber] = match;
     const building = findBuilding(buildingPart, buildings);
     
-    if (!building || !building.floors) continue;
+    if (!building) continue;
     
     // Determine the floor level from the room number
     // Room "110" -> floor "1", "210" -> floor "2", "B22" -> floor "B"
@@ -199,41 +166,88 @@ export const findRoom = (query: string, buildings: Building[]): RoomSearchResult
       targetFloorLevel = firstChar; // "1" for 110, "2" for 210, etc.
     }
     
-    // First, try to find the room in the matching floor
-    if (targetFloorLevel) {
-      const targetFloor = building.floors.find(f => f.level === targetFloorLevel);
-      if (targetFloor) {
-        // If floor has rooms defined, try to find the specific room
-        if (targetFloor.rooms) {
-          const room = targetFloor.rooms.find(r => 
-            r.number.toLowerCase() === roomNumber.toLowerCase()
-          );
-          if (room) {
-            return { building, floor: targetFloor, room };
-          }
-        }
-        
-        // If floor exists but room not found, create a placeholder room
-        const placeholderRoom: Room = {
-          number: roomNumber,
-          x: 50, // center of floor plan
-          y: 50,
-          name: 'Room'
-        };
-        return { building, floor: targetFloor, room: placeholderRoom };
+    if (!targetFloorLevel) continue;
+    
+    // Check if building has room data (even if floors aren't defined in marker.ts)
+    const hasRoomData = hasBuildingData(building.code);
+    const floorExistsInData = hasRoomData && hasFloor(building.code, targetFloorLevel);
+    
+    // Check if floor plan image exists (even if no room data)
+    const { hasFloorPlanImage } = require('./floorPlanImages');
+    const hasFloorPlan = hasFloorPlanImage(building.code, targetFloorLevel);
+    
+    // Try to find floor in building.floors first
+    let targetFloor: Floor | undefined;
+    if (building.floors) {
+      targetFloor = building.floors.find(f => f.level === targetFloorLevel);
+    }
+    
+    // If floor not found in building.floors, create it dynamically if:
+    // 1. Floor exists in roomData, OR
+    // 2. Floor plan image exists (even without room data)
+    if (!targetFloor && (floorExistsInData || hasFloorPlan)) {
+      // Try to get floor plan image if available
+      const mapImage = getFloorPlanImageForFloor(building.code, targetFloorLevel);
+      
+      targetFloor = {
+        level: targetFloorLevel,
+        name: getFloorName(targetFloorLevel),
+        mapImage: mapImage, // Will be undefined if image doesn't exist
+      };
+    }
+    
+    if (!targetFloor) continue;
+    
+    // Try to get coordinates from JSON data
+    // For basement rooms, try both with and without "B" prefix since data format varies
+    let jsonCoords = getRoomCoordinates(building.code, targetFloorLevel, roomNumber);
+    let finalRoomNumber = roomNumber; // Use variable to allow modification
+    
+    // If not found and it's a basement room, try without "B" prefix (e.g., "B22" -> "22")
+    if (!jsonCoords && targetFloorLevel === 'B' && roomNumber.startsWith('B')) {
+      const roomWithoutB = roomNumber.substring(1);
+      jsonCoords = getRoomCoordinates(building.code, targetFloorLevel, roomWithoutB);
+      if (jsonCoords) {
+        // Update finalRoomNumber to match what's in the data
+        finalRoomNumber = roomWithoutB;
       }
     }
     
-    // Fallback: search through all floors for the room
-    for (const floor of building.floors) {
-      if (!floor.rooms) continue;
-      
-      const room = floor.rooms.find(r => 
-        r.number.toLowerCase() === roomNumber.toLowerCase()
-      );
-      
-      if (room) {
-        return { building, floor, room };
+    // Also try with "B" prefix if searching without it (e.g., "22" -> "B22")
+    if (!jsonCoords && targetFloorLevel === 'B' && !roomNumber.startsWith('B')) {
+      const roomWithB = 'B' + roomNumber;
+      jsonCoords = getRoomCoordinates(building.code, targetFloorLevel, roomWithB);
+      if (jsonCoords) {
+        // Update finalRoomNumber to match what's in the data
+        finalRoomNumber = roomWithB;
+      }
+    }
+    
+    // If coordinates found OR floor plan exists (even without room data), create room object
+    // This allows searching for rooms on floors that have floor plans but no room data yet
+    if (jsonCoords || floorExistsInData || hasFloorPlan) {
+      const placeholderRoom: Room = {
+        number: finalRoomNumber,
+        x: jsonCoords ? jsonCoords[0] * 100 : 50, // Convert from 0-1 to 0-100%
+        y: jsonCoords ? jsonCoords[1] * 100 : 50,
+        name: 'Room'
+      };
+      return { building, floor: targetFloor, room: placeholderRoom };
+    }
+    
+    // Fallback: if building has floors defined, search through them
+    if (building.floors) {
+      for (const floor of building.floors) {
+        if (floor.level !== targetFloorLevel) continue;
+        if (!floor.rooms) continue;
+        
+        const room = floor.rooms.find(r => 
+          r.number.toLowerCase() === roomNumber.toLowerCase()
+        );
+        
+        if (room) {
+          return { building, floor, room };
+        }
       }
     }
   }
