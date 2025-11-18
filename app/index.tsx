@@ -1,3 +1,4 @@
+import * as Location from "expo-location";
 import React, { useRef, useState } from "react";
 import { Button, Modal, StyleSheet, View } from "react-native";
 import MapView, { Marker, Region } from "react-native-maps";
@@ -24,12 +25,32 @@ export default function App() {
   const [selectedRoom, setSelectedRoom] = useState<RoomSearchResult | null>(null);
   const mapRef = useRef<MapView>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [filters, setFilters] = useState({
     restrooms: false,
     cafes: false,
     vending: false,
     study: false,
   });
+
+  React.useEffect(() => {
+    (async () => {
+      // Request permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+
+      if (status !== "granted") {
+        console.warn("Location permission not granted");
+        return;
+      }
+
+      // Get current position
+      const loc = await Location.getCurrentPositionAsync({});
+      setUserLocation({
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+      });
+    })();
+  }, []);
 
   const handleBuildingFound = (building: Building) => {
     const region: Region = {
@@ -68,7 +89,7 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <MapView ref={mapRef} style={styles.map} initialRegion={initialRegion}>
+      <MapView ref={mapRef} style={styles.map} initialRegion={initialRegion} showsUserLocation={true}>
         {pin && <Marker coordinate={{ latitude: pin.lat, longitude: pin.lon }} title={pin.title} />}
 
         {/* Cafes */}
